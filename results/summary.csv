@@ -1,0 +1,2 @@
+model,pipeline,augmentation,capacity,budget,split,accuracy,precision,recall,f1,seed
+A,raw_flatten,NoAug,"C=1.0,gamma=0.1",data=100%,test,0.7243589743589743,0.7290322580645161,0.9912280701754386,0.8401486988847584,42
