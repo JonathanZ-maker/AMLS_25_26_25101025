@@ -1,25 +1,19 @@
 """
-AMLS Assignment - Main entry point (Step 2: Model A).
+AMLS Assignment - Main entry point.
 
-This main.py runs a robust, report-aligned experiment matrix for Model A:
+Supports:
+- Model A (Classical SVM pipelines) - fully implemented experiments + plots
+- Model B (ResNet-18 adapted) - baseline (B1) added
 
-A1 Baselines:
-  - raw_flatten + RBF SVM (grid search on val: C x gamma)
-  - HOG + Linear SVM (grid search on val: C only)
-
-A2 Capacity:
-  - raw_flatten + RBF: sweep all (C, gamma) on test
-  - HOG + Linear: sweep C on test
-
-A3 Augmentation sensitivity (HOG + Linear only):
-  - NoAug / RotShift / RotShift+Noise
-
-A4 Training budget (HOG + Linear only):
-  - 25% / 50% / 100% training data
+Usage:
+  python main.py --run A --reset
+  python main.py --run B --reset
+  python main.py --run all --reset
 
 Outputs:
-- results/summary.csv
-- results/plots/*.png
+  results/summary.csv
+  results/plots/*.png   (Model A plots are generated when A runs)
+  results/curves/*.csv  (Model B may generate curves in its train_eval module)
 """
 
 from __future__ import annotations
@@ -32,8 +26,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+
 from model_A.data import load_breastmnist
-from model_A.features import flatten_images, hog_features, fit_standardizer, apply_standardizer
+from model_A.features import (
+    flatten_images,
+    hog_features,
+    fit_standardizer,
+    apply_standardizer,
+)
 from model_A.augment import random_rotate_shift, add_gaussian_noise
 from model_A.train_eval import (
     SVMGrid,
@@ -41,6 +41,7 @@ from model_A.train_eval import (
     grid_search_svm,
     train_and_eval,
 )
+
 
 
 def set_seed(seed: int) -> np.random.Generator:
@@ -51,6 +52,7 @@ def set_seed(seed: int) -> np.random.Generator:
 
 def ensure_dirs(out_dir: Path) -> None:
     (out_dir / "plots").mkdir(parents=True, exist_ok=True)
+    (out_dir / "curves").mkdir(parents=True, exist_ok=True)
 
 
 def append_row(csv_path: Path, row: dict) -> None:
@@ -188,8 +190,10 @@ def plot_budget(df: pd.DataFrame, out_dir: Path) -> None:
     plt.close()
 
 
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--run", type=str, default="all", choices=["A", "B", "all"], help="Run Model A, Model B, or both.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_dir", type=str, default="results")
     parser.add_argument("--reset", action="store_true", help="Reset results/summary.csv before running.")
@@ -204,7 +208,7 @@ def main() -> None:
     if args.reset and summary_csv.exists():
         summary_csv.unlink()
 
-    # Load dataset
+
     splits = load_breastmnist(root)
     x_train = splits.x_train.astype(np.float32) / 255.0
     y_train = splits.y_train.astype(np.int64)
@@ -213,86 +217,108 @@ def main() -> None:
     x_test = splits.x_test.astype(np.float32) / 255.0
     y_test = splits.y_test.astype(np.int64)
 
-    grid = SVMGrid()
 
-    # ==========================================================
-    # A1: Baselines
-    # ==========================================================
-    # A1-raw: RBF SVM (C x gamma)
-    raw_cfg = SVMTrainConfig(kernel="rbf", class_weight="balanced")
-    f_tr = build_features("raw_flatten", x_train)
-    f_va = build_features("raw_flatten", x_val)
-    f_te = build_features("raw_flatten", x_test)
-    f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+    if args.run in ("A", "all"):
+        grid = SVMGrid()
 
-    best_C, best_gamma, best_val_metrics, _ = grid_search_svm(
-        f_tr, y_train, f_va, y_val, grid=grid, cfg=raw_cfg, selection_metric="f1_macro"
-    )
-    out = train_and_eval(f_tr, y_train, f_te, y_test, C=best_C, gamma=best_gamma, cfg=raw_cfg)
-    append_row(summary_csv, {
-        "model": "A",
-        "experiment": "A1_baseline_raw_rbf",
-        "pipeline": "raw_flatten",
-        "augmentation": "NoAug",
-        "kernel": "rbf",
-        "capacity": f"C={best_C},gamma={best_gamma}",
-        "capacity_C": float(best_C),
-        "capacity_gamma": float(best_gamma) if best_gamma is not None else np.nan,
-        "budget": "data=100%",
-        "budget_data_frac": 1.0,
-        "split": "test",
-        **out,
-        "seed": args.seed,
-    })
+        # A1: Baselines
+        # A1-raw: RBF SVM (grid search on val: C x gamma)
+        raw_cfg = SVMTrainConfig(kernel="rbf", class_weight="balanced")
+        f_tr = build_features("raw_flatten", x_train)
+        f_va = build_features("raw_flatten", x_val)
+        f_te = build_features("raw_flatten", x_test)
+        f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
 
-    # A1-hog: Linear SVM (C only)
-    hog_cfg = SVMTrainConfig(kernel="linear", class_weight="balanced")
-    f_tr = build_features("hog", x_train)
-    f_va = build_features("hog", x_val)
-    f_te = build_features("hog", x_test)
-    f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+        best_C, best_gamma, _, _ = grid_search_svm(
+            f_tr, y_train, f_va, y_val, grid=grid, cfg=raw_cfg, selection_metric="f1_macro"
+        )
+        out = train_and_eval(f_tr, y_train, f_te, y_test, C=best_C, gamma=best_gamma, cfg=raw_cfg)
+        append_row(summary_csv, {
+            "model": "A",
+            "experiment": "A1_baseline_raw_rbf",
+            "pipeline": "raw_flatten",
+            "augmentation": "NoAug",
+            "kernel": "rbf",
+            "capacity": f"C={best_C},gamma={best_gamma}",
+            "capacity_C": float(best_C),
+            "capacity_gamma": float(best_gamma) if best_gamma is not None else np.nan,
+            "budget": "data=100%",
+            "budget_data_frac": 1.0,
+            "split": "test",
+            **out,
+            "seed": args.seed,
+        })
 
-    best_C, best_gamma, best_val_metrics, _ = grid_search_svm(
-        f_tr, y_train, f_va, y_val, grid=grid, cfg=hog_cfg, selection_metric="f1_macro"
-    )
-    out = train_and_eval(f_tr, y_train, f_te, y_test, C=best_C, gamma=None, cfg=hog_cfg)
-    append_row(summary_csv, {
-        "model": "A",
-        "experiment": "A1_baseline_hog_linear",
-        "pipeline": "hog",
-        "augmentation": "NoAug",
-        "kernel": "linear",
-        "capacity": f"C={best_C}",
-        "capacity_C": float(best_C),
-        "capacity_gamma": np.nan,
-        "budget": "data=100%",
-        "budget_data_frac": 1.0,
-        "split": "test",
-        **out,
-        "seed": args.seed,
-    })
+        # A1-hog: Linear SVM (grid search on val: C only)
+        hog_cfg = SVMTrainConfig(kernel="linear", class_weight="balanced")
+        f_tr = build_features("hog", x_train)
+        f_va = build_features("hog", x_val)
+        f_te = build_features("hog", x_test)
+        f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
 
-    # ==========================================================
-    # A2: Capacity
-    # ==========================================================
-    # A2-raw-rbf: sweep C x gamma
-    f_tr = build_features("raw_flatten", x_train)
-    f_va = build_features("raw_flatten", x_val)
-    f_te = build_features("raw_flatten", x_test)
-    f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+        best_C, _, _, _ = grid_search_svm(
+            f_tr, y_train, f_va, y_val, grid=grid, cfg=hog_cfg, selection_metric="f1_macro"
+        )
+        out = train_and_eval(f_tr, y_train, f_te, y_test, C=best_C, gamma=None, cfg=hog_cfg)
+        append_row(summary_csv, {
+            "model": "A",
+            "experiment": "A1_baseline_hog_linear",
+            "pipeline": "hog",
+            "augmentation": "NoAug",
+            "kernel": "linear",
+            "capacity": f"C={best_C}",
+            "capacity_C": float(best_C),
+            "capacity_gamma": np.nan,
+            "budget": "data=100%",
+            "budget_data_frac": 1.0,
+            "split": "test",
+            **out,
+            "seed": args.seed,
+        })
 
-    for C in grid.C_list:
-        for gamma in grid.gamma_list:
-            out = train_and_eval(f_tr, y_train, f_te, y_test, C=float(C), gamma=float(gamma), cfg=raw_cfg)
+        # A2: Capacity
+        # A2-raw-rbf: sweep C x gamma (test)
+        f_tr = build_features("raw_flatten", x_train)
+        f_va = build_features("raw_flatten", x_val)
+        f_te = build_features("raw_flatten", x_test)
+        f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+
+        for C in grid.C_list:
+            for gamma in grid.gamma_list:
+                out = train_and_eval(f_tr, y_train, f_te, y_test, C=float(C), gamma=float(gamma), cfg=raw_cfg)
+                append_row(summary_csv, {
+                    "model": "A",
+                    "experiment": "A2_capacity_raw_rbf",
+                    "pipeline": "raw_flatten",
+                    "augmentation": "NoAug",
+                    "kernel": "rbf",
+                    "capacity": f"C={C},gamma={gamma}",
+                    "capacity_C": float(C),
+                    "capacity_gamma": float(gamma),
+                    "budget": "data=100%",
+                    "budget_data_frac": 1.0,
+                    "split": "test",
+                    **out,
+                    "seed": args.seed,
+                })
+
+        # A2-hog-linear: sweep C only (test)
+        f_tr = build_features("hog", x_train)
+        f_va = build_features("hog", x_val)
+        f_te = build_features("hog", x_test)
+        f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+
+        for C in grid.C_list:
+            out = train_and_eval(f_tr, y_train, f_te, y_test, C=float(C), gamma=None, cfg=hog_cfg)
             append_row(summary_csv, {
                 "model": "A",
-                "experiment": "A2_capacity_raw_rbf",
-                "pipeline": "raw_flatten",
+                "experiment": "A2_capacity_hog_linear",
+                "pipeline": "hog",
                 "augmentation": "NoAug",
-                "kernel": "rbf",
-                "capacity": f"C={C},gamma={gamma}",
+                "kernel": "linear",
+                "capacity": f"C={C}",
                 "capacity_C": float(C),
-                "capacity_gamma": float(gamma),
+                "capacity_gamma": np.nan,
                 "budget": "data=100%",
                 "budget_data_frac": 1.0,
                 "split": "test",
@@ -300,120 +326,155 @@ def main() -> None:
                 "seed": args.seed,
             })
 
-    # A2-hog-linear: sweep C only
-    f_tr = build_features("hog", x_train)
-    f_va = build_features("hog", x_val)
-    f_te = build_features("hog", x_test)
-    f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
-
-    for C in grid.C_list:
-        out = train_and_eval(f_tr, y_train, f_te, y_test, C=float(C), gamma=None, cfg=hog_cfg)
-        append_row(summary_csv, {
-            "model": "A",
-            "experiment": "A2_capacity_hog_linear",
-            "pipeline": "hog",
-            "augmentation": "NoAug",
-            "kernel": "linear",
-            "capacity": f"C={C}",
-            "capacity_C": float(C),
-            "capacity_gamma": np.nan,
-            "budget": "data=100%",
-            "budget_data_frac": 1.0,
-            "split": "test",
-            **out,
-            "seed": args.seed,
-        })
-
-    # ==========================================================
-    # A3: Augmentation sensitivity (HOG + Linear only)
-    # ==========================================================
-    # Select best C on unaugmented data as reference
-    f_tr0 = build_features("hog", x_train)
-    f_va0 = build_features("hog", x_val)
-    f_te0 = build_features("hog", x_test)
-    f_tr0, f_va0, f_te0 = standardize_by_train(f_tr0, f_va0, f_te0)
-
-    best_C, _, _, _ = grid_search_svm(
-        f_tr0, y_train, f_va0, y_val, grid=grid, cfg=hog_cfg, selection_metric="f1_macro"
-    )
-
-    aug_settings = [
-        ("NoAug", None),
-        ("RotShift", "rotshift"),
-        ("RotShift+Noise", "rotshift_noise"),
-    ]
-
-    for aug_name, aug_code in aug_settings:
-        x_tr_aug = x_train.copy()
-        if aug_code == "rotshift":
-            x_tr_aug = random_rotate_shift(x_tr_aug, rng)
-        elif aug_code == "rotshift_noise":
-            x_tr_aug = random_rotate_shift(x_tr_aug, rng)
-            x_tr_aug = add_gaussian_noise(x_tr_aug, rng)
-
-        f_tr = build_features("hog", x_tr_aug)
-        f_va = build_features("hog", x_val)
-        f_te = build_features("hog", x_test)
-        f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
-
-        out = train_and_eval(f_tr, y_train, f_te, y_test, C=float(best_C), gamma=None, cfg=hog_cfg)
-        append_row(summary_csv, {
-            "model": "A",
-            "experiment": "A3_augmentation_hog_linear",
-            "pipeline": "hog",
-            "augmentation": aug_name,
-            "kernel": "linear",
-            "capacity": f"C={best_C}",
-            "capacity_C": float(best_C),
-            "capacity_gamma": np.nan,
-            "budget": "data=100%",
-            "budget_data_frac": 1.0,
-            "split": "test",
-            **out,
-            "seed": args.seed,
-        })
-
-    # ==========================================================
-    # A4: Training data budget (HOG + Linear only)
-    # ==========================================================
-    for frac in [0.25, 0.50, 1.00]:
-        x_sub, y_sub = subsample(x_train, y_train, frac, rng)
-
-        f_tr = build_features("hog", x_sub)
-        f_va = build_features("hog", x_val)
-        f_te = build_features("hog", x_test)
-        f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+        # A3: Augmentation sensitivity (HOG + Linear only)
+        # Select best C on unaugmented data as reference
+        f_tr0 = build_features("hog", x_train)
+        f_va0 = build_features("hog", x_val)
+        f_te0 = build_features("hog", x_test)
+        f_tr0, f_va0, f_te0 = standardize_by_train(f_tr0, f_va0, f_te0)
 
         best_C, _, _, _ = grid_search_svm(
-            f_tr, y_sub, f_va, y_val, grid=grid, cfg=hog_cfg, selection_metric="f1_macro"
+            f_tr0, y_train, f_va0, y_val, grid=grid, cfg=hog_cfg, selection_metric="f1_macro"
         )
-        out = train_and_eval(f_tr, y_sub, f_te, y_test, C=float(best_C), gamma=None, cfg=hog_cfg)
+
+        aug_settings = [
+            ("NoAug", None),
+            ("RotShift", "rotshift"),
+            ("RotShift+Noise", "rotshift_noise"),
+        ]
+
+        for aug_name, aug_code in aug_settings:
+            x_tr_aug = x_train.copy()
+            if aug_code == "rotshift":
+                x_tr_aug = random_rotate_shift(x_tr_aug, rng)
+            elif aug_code == "rotshift_noise":
+                x_tr_aug = random_rotate_shift(x_tr_aug, rng)
+                x_tr_aug = add_gaussian_noise(x_tr_aug, rng)
+
+            f_tr = build_features("hog", x_tr_aug)
+            f_va = build_features("hog", x_val)
+            f_te = build_features("hog", x_test)
+            f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+
+            out = train_and_eval(f_tr, y_train, f_te, y_test, C=float(best_C), gamma=None, cfg=hog_cfg)
+            append_row(summary_csv, {
+                "model": "A",
+                "experiment": "A3_augmentation_hog_linear",
+                "pipeline": "hog",
+                "augmentation": aug_name,
+                "kernel": "linear",
+                "capacity": f"C={best_C}",
+                "capacity_C": float(best_C),
+                "capacity_gamma": np.nan,
+                "budget": "data=100%",
+                "budget_data_frac": 1.0,
+                "split": "test",
+                **out,
+                "seed": args.seed,
+            })
+
+        # A4: Training data budget (HOG + Linear only)
+        for frac in [0.25, 0.50, 1.00]:
+            x_sub, y_sub = subsample(x_train, y_train, frac, rng)
+
+            f_tr = build_features("hog", x_sub)
+            f_va = build_features("hog", x_val)
+            f_te = build_features("hog", x_test)
+            f_tr, f_va, f_te = standardize_by_train(f_tr, f_va, f_te)
+
+            best_C, _, _, _ = grid_search_svm(
+                f_tr, y_sub, f_va, y_val, grid=grid, cfg=hog_cfg, selection_metric="f1_macro"
+            )
+            out = train_and_eval(f_tr, y_sub, f_te, y_test, C=float(best_C), gamma=None, cfg=hog_cfg)
+
+            append_row(summary_csv, {
+                "model": "A",
+                "experiment": "A4_budget_hog_linear",
+                "pipeline": "hog",
+                "augmentation": "NoAug",
+                "kernel": "linear",
+                "capacity": f"C={best_C}",
+                "capacity_C": float(best_C),
+                "capacity_gamma": np.nan,
+                "budget": f"data={int(frac*100)}%",
+                "budget_data_frac": float(frac),
+                "split": "test",
+                **out,
+                "seed": args.seed,
+            })
+
+        # Plot report figures (Model A only)
+        df = pd.read_csv(summary_csv)
+        plot_capacity(df, out_dir)
+        plot_aug(df, out_dir)
+        plot_budget(df, out_dir)
+
+        print("Model A finished: experiments completed.")
+        print(f"Saved summary to: {summary_csv}")
+        print(f"Saved plots to: {out_dir / 'plots'}")
+
+    # Run Model B (baseline only)
+    if args.run in ("B", "all"):
+        # Import inside block so that --run A works even if model_B isn't created yet.
+        from model_B.data import get_dataloaders
+        from model_B.model import build_resnet18_1ch_28, set_trainable_backbone
+        from model_B.train_eval import TrainConfigB, train_and_eval_b
+
+        # Baseline config: NoAug, 20 epochs, 100% data, full finetune
+        dl_tr, dl_va, dl_te = get_dataloaders(
+            root_dir=root,
+            aug="NoAug",
+            data_frac=1.0,
+            batch_size=128,
+            seed=args.seed,
+            num_workers=0,
+        )
+
+        model = build_resnet18_1ch_28(num_classes=2)
+        set_trainable_backbone(model, train_backbone=True)
+
+        cfg = TrainConfigB(
+            aug="NoAug",
+            data_frac=1.0,
+            epochs=20,
+            batch_size=64,
+            lr=1e-3,
+            weight_decay=1e-4,
+            train_backbone=True,
+            seed=args.seed,
+            device="cuda",
+        )
+
+        out_b = train_and_eval_b(model, dl_tr, dl_va, dl_te, cfg, out_dir=out_dir)
 
         append_row(summary_csv, {
-            "model": "A",
-            "experiment": "A4_budget_hog_linear",
-            "pipeline": "hog",
-            "augmentation": "NoAug",
-            "kernel": "linear",
-            "capacity": f"C={best_C}",
-            "capacity_C": float(best_C),
+            "model": "B",
+            "experiment": "B1_baseline",
+            "pipeline": "resnet18",
+            "augmentation": cfg.aug,
+            "kernel": "n/a",
+            "capacity": "full_finetune",
+            "capacity_C": np.nan,
             "capacity_gamma": np.nan,
-            "budget": f"data={int(frac*100)}%",
-            "budget_data_frac": float(frac),
+            "budget": f"data=100%,epochs={cfg.epochs}",
+            "budget_data_frac": 1.0,
+            "budget_epochs": cfg.epochs,
             "split": "test",
-            **out,
+            # metrics returned by Model B trainer
+            **{k: out_b[k] for k in [
+                "accuracy", "precision", "recall", "f1", "f1_macro", "bal_acc",
+                "pred_pos_rate", "tn", "fp", "fn", "tp"
+            ]},
+            
+            "curve_fig_path_loss": out_b.get("curve_fig_path_loss", ""),
+            "curve_fig_path_f1": out_b.get("curve_fig_path_f1", ""),
+            
             "seed": args.seed,
         })
 
-    # Plot report figures
-    df = pd.read_csv(summary_csv)
-    plot_capacity(df, out_dir)
-    plot_aug(df, out_dir)
-    plot_budget(df, out_dir)
-
-    print("Step 2 finished: Model A experiments completed.")
-    print(f"Saved summary to: {summary_csv}")
-    print(f"Saved plots to: {out_dir / 'plots'}")
+        print("Model B finished: baseline completed.")
+        print(f"Saved summary to: {summary_csv}")
+        print(f"Saved curves to: {out_dir / 'curves'}")
 
 
 if __name__ == "__main__":
