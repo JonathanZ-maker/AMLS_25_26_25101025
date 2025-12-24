@@ -413,68 +413,150 @@ def main() -> None:
         print(f"Saved summary to: {summary_csv}")
         print(f"Saved plots to: {out_dir / 'plots'}")
 
-    # Run Model B (baseline only)
+    # Run Model B (B1 baseline + B2~B5 experiments)
     if args.run in ("B", "all"):
         # Import inside block so that --run A works even if model_B isn't created yet.
         from model_B.data import get_dataloaders
         from model_B.model import build_resnet18_1ch_28, set_trainable_backbone
         from model_B.train_eval import TrainConfigB, train_and_eval_b
 
-        # Baseline config: NoAug, 20 epochs, 100% data, full finetune
-        dl_tr, dl_va, dl_te = get_dataloaders(
-            root_dir=root,
-            aug="NoAug",
-            data_frac=1.0,
-            batch_size=128,
-            seed=args.seed,
-            num_workers=0,
-        )
+        def run_one_b(
+            experiment: str,
+            aug: str,
+            data_frac: float,
+            epochs: int,
+            train_backbone: bool,
+            batch_size: int = 64,
+            lr: float = 1e-3,
+            weight_decay: float = 1e-4,
+        ) -> None:
+            """
+            Run a single Model B experiment and append results to summary.csv.
+            Keeps Model A untouched; only affects Model B pipeline.
+            """
+            cfg = TrainConfigB(
+                aug=aug,
+                data_frac=float(data_frac),
+                epochs=int(epochs),
+                batch_size=int(batch_size),
+                lr=float(lr),
+                weight_decay=float(weight_decay),
+                train_backbone=bool(train_backbone),
+                seed=int(args.seed),
+                device="cuda",
+            )
 
-        model = build_resnet18_1ch_28(num_classes=2)
-        set_trainable_backbone(model, train_backbone=True)
+            # IMPORTANT: use cfg.batch_size here to avoid mismatch
+            dl_tr, dl_va, dl_te = get_dataloaders(
+                root_dir=root,
+                aug=cfg.aug,
+                data_frac=cfg.data_frac,
+                batch_size=cfg.batch_size,
+                seed=cfg.seed,
+                num_workers=0,
+            )
 
-        cfg = TrainConfigB(
+            model = build_resnet18_1ch_28(num_classes=2)
+            set_trainable_backbone(model, train_backbone=cfg.train_backbone)
+
+            out_b = train_and_eval_b(model, dl_tr, dl_va, dl_te, cfg, out_dir=out_dir)
+
+            append_row(summary_csv, {
+                "model": "B",
+                "experiment": experiment,
+                "pipeline": "resnet18",
+                "augmentation": cfg.aug,
+                "kernel": "n/a",
+                "capacity": "full_finetune" if cfg.train_backbone else "frozen_backbone",
+                "capacity_C": np.nan,
+                "capacity_gamma": np.nan,
+                "budget": f"data={int(cfg.data_frac*100)}%,epochs={cfg.epochs}",
+                "budget_data_frac": float(cfg.data_frac),
+                "budget_epochs": int(cfg.epochs),
+                "split": "test",
+
+                **{k: out_b[k] for k in [
+                    "accuracy", "precision", "recall", "f1", "f1_macro", "bal_acc",
+                    "pred_pos_rate", "tn", "fp", "fn", "tp"
+                ]},
+
+                # keep artifacts for Section 4 convergence discussion
+                "curve_path": out_b.get("curve_path", ""),
+                "curve_fig_path_loss": out_b.get("curve_fig_path_loss", ""),
+                "curve_fig_path_f1": out_b.get("curve_fig_path_f1", ""),
+
+                "seed": int(args.seed),
+            })
+
+        # -----------------------
+        # B1: baseline (already done before, now handled via run_one_b)
+        # -----------------------
+        run_one_b(
+            experiment="B1_baseline",
             aug="NoAug",
             data_frac=1.0,
             epochs=20,
-            batch_size=64,
-            lr=1e-3,
-            weight_decay=1e-4,
             train_backbone=True,
-            seed=args.seed,
-            device="cuda",
+            batch_size=64,
         )
 
-        out_b = train_and_eval_b(model, dl_tr, dl_va, dl_te, cfg, out_dir=out_dir)
+        # -----------------------
+        # B2: augmentation sensitivity (NoAug / RotShift / RotShift+Noise)
+        # -----------------------
+        for aug in ["NoAug", "RotShift", "RotShift+Noise"]:
+            run_one_b(
+                experiment="B2_augmentation",
+                aug=aug,
+                data_frac=1.0,
+                epochs=20,
+                train_backbone=True,
+                batch_size=64,
+            )
 
-        append_row(summary_csv, {
-            "model": "B",
-            "experiment": "B1_baseline",
-            "pipeline": "resnet18",
-            "augmentation": cfg.aug,
-            "kernel": "n/a",
-            "capacity": "full_finetune",
-            "capacity_C": np.nan,
-            "capacity_gamma": np.nan,
-            "budget": f"data=100%,epochs={cfg.epochs}",
-            "budget_data_frac": 1.0,
-            "budget_epochs": cfg.epochs,
-            "split": "test",
-            # metrics returned by Model B trainer
-            **{k: out_b[k] for k in [
-                "accuracy", "precision", "recall", "f1", "f1_macro", "bal_acc",
-                "pred_pos_rate", "tn", "fp", "fn", "tp"
-            ]},
-            
-            "curve_fig_path_loss": out_b.get("curve_fig_path_loss", ""),
-            "curve_fig_path_f1": out_b.get("curve_fig_path_f1", ""),
-            
-            "seed": args.seed,
-        })
+        # -----------------------
+        # B3: epoch budget (5 / 20 / 50)
+        # -----------------------
+        for ep in [5, 20, 50]:
+            run_one_b(
+                experiment="B3_budget_epochs",
+                aug="NoAug",
+                data_frac=1.0,
+                epochs=ep,
+                train_backbone=True,
+                batch_size=64,
+            )
 
-        print("Model B finished: baseline completed.")
+        # -----------------------
+        # B4: data budget (25% / 50% / 100%)
+        # -----------------------
+        for frac in [0.25, 0.50, 1.00]:
+            run_one_b(
+                experiment="B4_budget_data",
+                aug="NoAug",
+                data_frac=frac,
+                epochs=20,
+                train_backbone=True,
+                batch_size=64,
+            )
+
+        # -----------------------
+        # B5: capacity (Frozen vs Full)
+        # -----------------------
+        for train_backbone in [False, True]:
+            run_one_b(
+                experiment="B5_capacity",
+                aug="NoAug",
+                data_frac=1.0,
+                epochs=20,
+                train_backbone=train_backbone,
+                batch_size=64,
+            )
+
+        print("Model B finished: B1 baseline + B2~B5 experiments completed.")
         print(f"Saved summary to: {summary_csv}")
         print(f"Saved curves to: {out_dir / 'curves'}")
+        print(f"Saved plots to: {out_dir / 'plots'}")
+
 
 
 if __name__ == "__main__":
