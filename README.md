@@ -7,18 +7,19 @@ This repository contains the implementation and experimental evaluation for the 
 
 ## Project Structure
 
-AMLS_25_26_25101025/
-├── Code/
-│ ├── model_A/ # Kernel SVM pipeline (raw pixels & HOG features)
-│ └── model_B/ # ResNet-18 pipeline (deep learning model)
-├── Datasets/ # Kept empty for submission (dataset loaded automatically)
-├── results/
-│ ├── summary.csv # Aggregated experimental results
-│ ├── plots/ # Figures for report
-│ └── curves/ # Training curves (CSV)
-├── main.py # Main entry point for all experiments
-├── plot_results.py # Generate report-ready figures from summary.csv
-└── README.md
+The project is organised as follows:
+
+- `Code/model_A/`: Classical machine learning pipeline, including Kernel SVM
+  experiments with raw pixel features and HOG feature extraction.
+- `Code/model_B/`: Deep learning pipeline based on a ResNet-18 architecture.
+- `Datasets/`: Kept empty for submission. The dataset will be provided and
+  automatically loaded during assessment.
+- `results/`: Stores experimental outputs, including aggregated results,
+  training curves, and figures used in the report.
+- `main.py`: Unified entry point for running all experiments.
+- `plot_results.py`: Utility script for generating report-ready figures from
+  the experimental results.
+- `README.md`: Project documentation and usage instructions.
 
 
 ---
